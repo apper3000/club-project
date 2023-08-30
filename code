@@ -1,0 +1,173 @@
+#include <ESP8266WiFi.h>
+#include "PMS.h"
+#include <SoftwareSerial.h>
+
+SoftwareSerial nockanda(D3, D4); //tx=3, rx=4
+
+PMS pms(nockanda);
+PMS::DATA data;
+
+#ifndef STASSID
+#define STASSID "SK_WiFiGIGADA33"
+#define STAPSK  "1801025309"
+#endif
+
+const char* ssid = STASSID;
+const char* password = STAPSK;
+
+WiFiServer server(80);
+
+void setup() {
+  Serial.begin(115200);
+  Serial.begin(115200); // PC-아두이노간 통신(결과를 출력하기 위한)
+  nockanda.begin(9600);  // 아두이노-미세먼지센서간 통신
+  pms.passiveMode();
+
+  // LED 준비
+  pinMode(LED_BUILTIN, OUTPUT);
+  digitalWrite(LED_BUILTIN, 0);
+
+  // WiFi 네트워크에 연결
+  Serial.println();
+  Serial.println();
+  Serial.print(F("연결 중: "));
+  Serial.println(ssid);
+
+  WiFi.mode(WIFI_STA);
+  WiFi.begin(ssid, password);
+
+  while (WiFi.status() != WL_CONNECTED) {
+    delay(500);
+    Serial.print(F("."));
+  }
+  Serial.println();
+  Serial.println(F("WiFi 연결됨"));
+
+  // 서버 시작
+  server.begin();
+  Serial.println(F("서버 시작됨"));
+
+  // IP 주소 출력
+  Serial.println(WiFi.localIP());
+}
+
+void loop() {
+  // 클라이언트가 연결되었는지 확인
+  WiFiClient client = server.available();
+  if (!client) {
+    return;
+  }
+  Serial.println(F("새로운 클라이언트"));
+
+  client.setTimeout(5000); // 기본값은 1000
+
+  String req = client.readStringUntil('\r');
+  Serial.println(F("요청: "));
+  Serial.println(req);
+
+  while (client.available()) {
+    // 바이트 단위로 읽어들이는 것은 효율적이지 않습니다.
+    client.read();
+  }
+
+  // 센서 값을 측정
+  String response;
+  Serial.println("측정 요청 전송...");
+  pms.requestRead();
+
+  Serial.println("최대 1초 동안 읽기 대기...");
+  if (pms.readUntil(data)) {
+    Serial.print("PM 1.0 (ug/m3): ");
+    Serial.println(data.PM_AE_UG_1_0);
+
+    Serial.print("PM 2.5 (ug/m3): ");
+    Serial.println(data.PM_AE_UG_2_5);
+
+    Serial.print("PM 10.0 (ug/m3): ");
+    Serial.println(data.PM_AE_UG_10_0);
+  } else {
+    Serial.println("데이터 없음.");
+    response = "측정에 실패했습니다.";
+  }
+
+  // 클라이언트로 보내는 응답
+  client.print("HTTP/1.1 200 OK\r\nContent-Type: text/html\r\n\r\n");
+  client.println("<!DOCTYPE html>");
+  client.println("<html>");
+  client.println("<head>");
+  client.println("<meta charset=\"UTF-8\">");
+  client.println("<title>미세먼지 농도</title>");
+  client.println("<style>");
+  client.println("body { font-family: Arial, sans-serif; text-align: center; background-color: #f0f0f0; }");
+  client.println(".container { max-width: 800px; margin: 0 auto; padding: 20px; background-color: #ffffff; border-radius: 10px; box-shadow: 0px 0px 10px rgba(0, 0, 0, 0.2); }");
+  client.println("h1 { color: #333; }");
+  client.println("h3 { color: #555; margin-top: 20px; }");
+  client.println(".value { font-weight: bold; font-size: 24px; color: #FF5733; }");
+  client.println("</style>");
+  client.println("</head>");
+  client.println("<body>");
+
+  client.println("<div class=\"container\">");
+  client.println("<h1>미세먼지 농도</h1>");
+  client.println("<h3>PM 1.0 (ug/m3): <span class=\"value\">" + String(data.PM_AE_UG_1_0) + "</span></h3>");
+  client.println("<h3>PM 2.5 (ug/m3): <span class=\"value\">" + String(data.PM_AE_UG_2_5) + "</span></h3>");
+  client.println("<h3>PM 10.0 (ug/m3): <span class=\"value\">" + String(data.PM_AE_UG_10_0) + "</span></h3>");
+  client.println("<a href=\"https://weather.naver.com/air/\"><h3>실외 미세먼지 농도</h3></a>");
+  client.println("<h3>대기질 지수 (AQI)</h3>");
+
+  client.println("<table>");
+  client.println("<tr>");
+  client.println("<th> 색상 </th>");
+  client.println("<th>우려 수준</th>");
+  client.println("<th>지수 값</th>");
+  client.println("<th>대기질 설명</th>");
+  client.println("</tr>");
+  client.println("<tr bgcolor=\"#66EC66\">");
+  client.println("<td> 녹색 </td>");
+  client.println("<td>좋음</td>");
+  client.println("<td>0부터 50</td>");
+  client.println("<td>대기질이 만족스럽고 공기 오염 위험이 거의 없습니다.</td>");
+  client.println("</tr>");
+  client.println("<tr bgcolor=\"#FFEB46\">");
+  client.println("<td> 노랑 </td>");
+  client.println("<td>보통</td>");
+  client.println("<td>51부터 100</td>");
+  client.println("<td>대기질은 허용 가능합니다. 그러나 공기 오염에 예민한 사람들에게는 위험이 있을 수 있습니다.</td>");
+  client.println("</tr>");
+  client.println("<tr bgcolor=\"#FF9614\">");
+  client.println("<td> 주황 </td>");
+  client.println("<td>민감 군에게 유해</td>");
+  client.println("<td>101부터 150</td>");
+  client.println("<td>민감한 그룹의 구성원은 건강 영향을 경험할 수 있습니다. 일반 대중의 영향은 덜합니다.</td>");
+  client.println("</tr>");
+  client.println("<tr bgcolor=\"#FF0000\">");
+  client.println("<td> 빨강 </td>");
+  client.println("<td>유해</td>");
+  client.println("<td>151부터 200</td>");
+  client.println("<td>일부 일반 대중은 건강 영향을 경험할 수 있으며, 민감한 그룹의 구성원은 더 심각한 건강 영향을 경험할 수 있습니다.</td>");
+  client.println("</tr>");
+  client.println("<tr bgcolor=\"#941494\">");
+  client.println("<td> 보라 </td>");
+  client.println("<td>매우 유해</td>");
+  client.println("<td>201부터 300</td>");
+  client.println("<td>건강 경고: 모든 사람에게 건강 영향의 위험이 증가합니다.</td>");
+  client.println("</tr>");
+  client.println("<tr bgcolor=\"#800000\">");
+  client.println("<td> 적갈색 </td>");
+  client.println("<td>위험</td>");
+  client.println("<td>301 이상</td>");
+  client.println("<td>비상 상황의 건강 경고: 모든 사람이 영향을 받을 가능성이 높습니다.</td>");
+  client.println("</tr>");
+  client.println("</table>");
+  client.println("<div style=\"position: fixed; bottom: 10px; right: 10px;\">");
+  client.println("<p>2023 동아리 프로젝트 made by 30516 조은후</p>");
+  client.println("<div style=\"position: fixed; top: 100px; left: 100px;\">");
+  client.println("<img src=\"https://i.namu.wiki/i/O2Sv0GBe4a9tV9MXzLOiuMNvyqB6GPvwRPsYc8Gr_c4MyT1vVn_NhNurVLXcIxm8Ialb0uW6kKTdgeOTv5JByowN6YOVkPSYc98gciycoiLE0i1HWVWMgH6fg2AqqbO5_xoSkplHp6XrmptMD8ceaA.webp\" alt=\"프로젝트 로고\" width=\"200px\">");
+  client.println("</div>");
+
+  client.println("</body>");
+
+  client.println("</html>");
+
+  Serial.println(F("클라이언트와의 연결 해제"));
+}
